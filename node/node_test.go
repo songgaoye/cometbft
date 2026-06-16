@@ -265,9 +265,17 @@ func TestStartRPCCleansUpOnFailure(t *testing.T) {
 	_, err = n.startRPC()
 	require.Error(t, err)
 
-	probe, err := net.Listen("tcp", firstAddr)
-	require.NoError(t, err, "startRPC leaked first listener on %s", firstAddr)
-	probe.Close()
+	// The first listener should be free now. Retry to ride out a transient
+	// ephemeral-port grab (seen on busy CI machines); a real leak holds the
+	// port forever and still fails.
+	require.Eventually(t, func() bool {
+		probe, err := net.Listen("tcp", firstAddr)
+		if err != nil {
+			return false
+		}
+		probe.Close()
+		return true
+	}, 3*time.Second, 10*time.Millisecond, "startRPC leaked first listener on %s", firstAddr)
 }
 
 // newNodeTestConfig returns a test config with kernel-assigned ephemeral P2P
