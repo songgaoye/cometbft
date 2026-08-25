@@ -27,8 +27,11 @@ func BenchmarkApplyBlockBlockEvents(b *testing.B) {
 
 	for _, tc := range testCases {
 		name := fmt.Sprintf("txs=%d/delay=%s", tc.txs, tc.delay)
-		b.Run(name, func(b *testing.B) {
-			benchmarkApplyBlockBlockEvents(b, tc.txs, tc.delay)
+		b.Run(name+"/sync", func(b *testing.B) {
+			benchmarkApplyBlockBlockEvents(b, tc.txs, tc.delay, false)
+		})
+		b.Run(name+"/async", func(b *testing.B) {
+			benchmarkApplyBlockBlockEvents(b, tc.txs, tc.delay, true)
 		})
 	}
 }
@@ -37,7 +40,7 @@ func BenchmarkApplyBlockBlockEvents(b *testing.B) {
 // an unbuffered consumer, as used by the indexer. Run with
 // a fixed iteration count so slow-consumer time does not make calibration
 // excessively long, for example: -benchtime=20x. Each iteration drains the
-// consumer outside the timer, so the benchmark measures ApplyBlock's
+// runner and consumer outside the timer, so the benchmark measures ApplyBlock's
 // critical path without treating an ever-growing event backlog as a speedup.
 func BenchmarkApplyBlockRealEventBus(b *testing.B) {
 	testCases := []struct {
@@ -57,18 +60,27 @@ func BenchmarkApplyBlockRealEventBus(b *testing.B) {
 
 	for _, tc := range testCases {
 		name := fmt.Sprintf("txs=%d/delay=%s/capacity=%d", tc.txs, tc.delay, tc.capacity)
-		b.Run(name, func(b *testing.B) {
-			benchmarkApplyBlockRealEventBus(b, tc.txs, tc.delay, tc.capacity)
+		b.Run(name+"/sync", func(b *testing.B) {
+			benchmarkApplyBlockRealEventBus(b, tc.txs, tc.delay, tc.capacity, false)
+		})
+		b.Run(name+"/async", func(b *testing.B) {
+			benchmarkApplyBlockRealEventBus(b, tc.txs, tc.delay, tc.capacity, true)
 		})
 	}
 }
 
-func benchmarkApplyBlockRealEventBus(b *testing.B, txs int, delay time.Duration, capacity int) {
+func benchmarkApplyBlockRealEventBus(b *testing.B, txs int, delay time.Duration, capacity int, async bool) {
 	state, stateDB, privVals := makeState(1, 1)
 	blockExec := newCachedBlockExec(b, stateDB)
 	events := newBenchmarkEventBus(b, capacity, delay)
 	b.Cleanup(events.Close)
 	blockExec.SetEventBus(events.bus)
+	var runner *benchmarkAsyncRunner
+	if async {
+		runner = newBenchmarkAsyncRunner()
+		b.Cleanup(runner.Stop)
+		blockExec.SetAsyncRunner(runner.Submit)
+	}
 
 	proposerAddr := state.NextValidators.Validators[0].Address
 	lastCommit := new(types.Commit)
@@ -92,6 +104,9 @@ func benchmarkApplyBlockRealEventBus(b *testing.B, txs int, delay time.Duration,
 		b.StopTimer()
 		require.NoError(b, err)
 
+		if runner != nil {
+			runner.Wait()
+		}
 		events.Wait()
 
 		extendedCommit, _, err := makeValidCommit(height, blockID, state.Validators, privVals)
@@ -147,7 +162,9 @@ func (e *benchmarkEventBus) consume(sub types.Subscription) {
 }
 
 func (e *benchmarkEventBus) ExpectBlock(txs int) {
-	e.pending.Add(txs + 1) // NewBlockEvents plus one event for each transaction.
+	// fireEvents also publishes NewBlock and NewBlockHeader, but this harness
+	// subscribes only to NewBlockEvents and Tx events.
+	e.pending.Add(1 + txs)
 }
 
 func (e *benchmarkEventBus) Wait() {
@@ -160,10 +177,16 @@ func (e *benchmarkEventBus) Close() {
 	e.consumers.Wait()
 }
 
-func benchmarkApplyBlockBlockEvents(b *testing.B, txs int, delay time.Duration) {
+func benchmarkApplyBlockBlockEvents(b *testing.B, txs int, delay time.Duration, async bool) {
 	state, stateDB, privVals := makeState(1, 1)
 	blockExec := newCachedBlockExec(b, stateDB)
 	blockExec.SetEventBus(delayedBlockEventPublisher{delay: delay})
+	var runner *benchmarkAsyncRunner
+	if async {
+		runner = newBenchmarkAsyncRunner()
+		b.Cleanup(runner.Stop)
+		blockExec.SetAsyncRunner(runner.Submit)
+	}
 
 	proposerAddr := state.NextValidators.Validators[0].Address
 	lastCommit := new(types.Commit)
@@ -184,6 +207,10 @@ func benchmarkApplyBlockBlockEvents(b *testing.B, txs int, delay time.Duration) 
 		state, err = blockExec.ApplyBlock(state, blockID, block)
 		b.StopTimer()
 		require.NoError(b, err)
+
+		if runner != nil {
+			runner.Wait()
+		}
 
 		extendedCommit, _, err := makeValidCommit(height, blockID, state.Validators, privVals)
 		require.NoError(b, err)
@@ -222,4 +249,55 @@ func (p delayedBlockEventPublisher) PublishEventNewEvidence(types.EventDataNewEv
 
 func (p delayedBlockEventPublisher) PublishEventTx(types.EventDataTx) error {
 	return p.publish()
+}
+
+type benchmarkAsyncRunner struct {
+	tasks chan func()
+	quit  chan struct{}
+	wg    sync.WaitGroup
+}
+
+func newBenchmarkAsyncRunner() *benchmarkAsyncRunner {
+	runner := &benchmarkAsyncRunner{
+		tasks: make(chan func(), 1),
+		quit:  make(chan struct{}),
+	}
+	go func() {
+		for {
+			select {
+			case <-runner.quit:
+				return
+			default:
+			}
+
+			select {
+			case task := <-runner.tasks:
+				select {
+				case <-runner.quit:
+					return
+				default:
+				}
+				task()
+			case <-runner.quit:
+				return
+			}
+		}
+	}()
+	return runner
+}
+
+func (r *benchmarkAsyncRunner) Submit(task func()) {
+	r.wg.Add(1)
+	r.tasks <- func() {
+		defer r.wg.Done()
+		task()
+	}
+}
+
+func (r *benchmarkAsyncRunner) Wait() {
+	r.wg.Wait()
+}
+
+func (r *benchmarkAsyncRunner) Stop() {
+	close(r.quit)
 }

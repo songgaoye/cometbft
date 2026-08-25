@@ -1218,6 +1218,106 @@ func TestValidateBlockCacheHeightAware(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestApplyBlockUsesAsyncRunnerForBlockEvents(t *testing.T) {
+	state, stateDB, _ := makeState(1, 1)
+	exec := newCachedBlockExec(t, stateDB)
+
+	eventBus := &blockingBlockEventPublisher{
+		newBlockStarted: make(chan struct{}, 1),
+		releaseNewBlock: make(chan struct{}),
+	}
+	exec.SetEventBus(eventBus)
+	exec.SetAsyncRunner(func(task func()) {
+		go task()
+	})
+
+	block, err := makeBlock(state, 1, new(types.Commit))
+	require.NoError(t, err)
+	bps, err := block.MakePartSet(testPartSize)
+	require.NoError(t, err)
+	blockID := types.BlockID{Hash: block.Hash(), PartSetHeader: bps.Header()}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := exec.ApplyBlock(state, blockID, block)
+		done <- err
+	}()
+
+	select {
+	case <-eventBus.newBlockStarted:
+	case <-time.After(time.Second):
+		t.Fatal("block event publication did not start")
+	}
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		close(eventBus.releaseNewBlock)
+		require.NoError(t, <-done)
+		t.Fatal("ApplyBlock waited for block event publication")
+	}
+
+	close(eventBus.releaseNewBlock)
+}
+
+func TestApplyBlockPublishesBlockEventsSynchronouslyByDefault(t *testing.T) {
+	state, stateDB, _ := makeState(1, 1)
+	exec := newCachedBlockExec(t, stateDB)
+
+	eventBus := &blockingBlockEventPublisher{
+		newBlockStarted: make(chan struct{}, 1),
+		releaseNewBlock: make(chan struct{}),
+	}
+	exec.SetEventBus(eventBus)
+
+	block, err := makeBlock(state, 1, new(types.Commit))
+	require.NoError(t, err)
+	bps, err := block.MakePartSet(testPartSize)
+	require.NoError(t, err)
+	blockID := types.BlockID{Hash: block.Hash(), PartSetHeader: bps.Header()}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := exec.ApplyBlock(state, blockID, block)
+		done <- err
+	}()
+
+	select {
+	case <-eventBus.newBlockStarted:
+	case <-time.After(time.Second):
+		t.Fatal("block event publication did not start")
+	}
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+		t.Fatal("ApplyBlock returned before synchronous event publication completed")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	close(eventBus.releaseNewBlock)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("ApplyBlock did not return after event publication completed")
+	}
+}
+
+type blockingBlockEventPublisher struct {
+	types.NopEventBus
+
+	newBlockStarted chan struct{}
+	releaseNewBlock chan struct{}
+}
+
+func (p *blockingBlockEventPublisher) PublishEventNewBlock(types.EventDataNewBlock) error {
+	p.newBlockStarted <- struct{}{}
+	<-p.releaseNewBlock
+	return nil
+}
+
 func stripSignatures(ec *types.ExtendedCommit) {
 	for i, commitSig := range ec.ExtendedSignatures {
 		commitSig.Extension = nil
