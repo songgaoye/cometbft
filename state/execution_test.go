@@ -1118,7 +1118,7 @@ func TestCreateProposalAbsentVoteExtensions(t *testing.T) {
 	}
 }
 
-func newCachedBlockExec(t *testing.T, stateDB dbm.DB) *sm.BlockExecutor {
+func newCachedBlockExec(t testing.TB, stateDB dbm.DB) *sm.BlockExecutor {
 	t.Helper()
 	app := &testApp{}
 	cc := proxy.NewLocalClientCreator(app)
