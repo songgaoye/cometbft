@@ -36,12 +36,9 @@ func BenchmarkApplyBlockBlockEvents(b *testing.B) {
 	}
 }
 
-// BenchmarkApplyBlockRealEventBus measures the existing EventBus buffer using
-// an unbuffered consumer, as used by the indexer. Run with
-// a fixed iteration count so slow-consumer time does not make calibration
-// excessively long, for example: -benchtime=20x. Each iteration drains the
-// runner and consumer outside the timer, so the benchmark measures ApplyBlock's
-// critical path without treating an ever-growing event backlog as a speedup.
+// BenchmarkApplyBlockRealEventBus uses unbuffered indexer-style consumers.
+// Each iteration drains pending work outside the timer so an accumulating
+// event backlog is not reported as an ApplyBlock speedup.
 func BenchmarkApplyBlockRealEventBus(b *testing.B) {
 	testCases := []struct {
 		txs      int

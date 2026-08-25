@@ -831,7 +831,6 @@ func (n *Node) OnStop() {
 	}
 }
 
-// stopEventServices stops the EventBus and indexer in their historical order.
 func (n *Node) stopEventServices() {
 	if err := n.eventBus.Stop(); err != nil {
 		n.Logger.Error("Error closing eventBus", "err", err)

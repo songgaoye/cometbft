@@ -55,7 +55,6 @@ type BlockExecutor struct {
 	// blockTimeTolerance is the maximum allowed difference between proposed block time and wall clock.
 	blockTimeTolerance time.Duration
 
-	// asyncRunner runs block event publication off the ApplyBlock critical path.
 	asyncRunner func(func())
 }
 

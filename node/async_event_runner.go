@@ -4,7 +4,6 @@ import "sync"
 
 const defaultAsyncEventQueueSize = 128
 
-// asyncEventRunner executes tasks serially and drains accepted work on Stop.
 type asyncEventRunner struct {
 	tasks chan func()
 	done  chan struct{}

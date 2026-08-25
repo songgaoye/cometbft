@@ -13,7 +13,6 @@ func TestAsyncEventRunnerRunsTasksFIFO(t *testing.T) {
 
 	done := make(chan int, 3)
 	for i := 0; i < 3; i++ {
-		i := i
 		runner.Submit(func() { done <- i })
 	}
 
