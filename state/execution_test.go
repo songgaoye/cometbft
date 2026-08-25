@@ -21,6 +21,7 @@ import (
 	"github.com/cometbft/cometbft/crypto/tmhash"
 	"github.com/cometbft/cometbft/internal/test"
 	"github.com/cometbft/cometbft/libs/log"
+	cmtquery "github.com/cometbft/cometbft/libs/pubsub/query"
 	mpmocks "github.com/cometbft/cometbft/mempool/mocks"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	cmtversion "github.com/cometbft/cometbft/proto/tendermint/version"
@@ -1302,6 +1303,57 @@ func TestApplyBlockPublishesBlockEventsSynchronouslyByDefault(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("ApplyBlock did not return after event publication completed")
+	}
+}
+
+func TestApplyBlockAsyncBlockEventsMayLagLaterEventBusPublications(t *testing.T) {
+	state, stateDB, _ := makeState(1, 1)
+	exec := newCachedBlockExec(t, stateDB)
+
+	eventBus := types.NewEventBus()
+	require.NoError(t, eventBus.Start())
+	t.Cleanup(func() { require.NoError(t, eventBus.Stop()) })
+
+	sub, err := eventBus.Subscribe(t.Context(), "async-event-order", cmtquery.All, 16)
+	require.NoError(t, err)
+
+	exec.SetEventBus(eventBus)
+	queuedTasks := make(chan func(), 1)
+	exec.SetAsyncRunner(func(task func()) {
+		queuedTasks <- task
+	})
+
+	block, err := makeBlock(state, 1, new(types.Commit))
+	require.NoError(t, err)
+	bps, err := block.MakePartSet(testPartSize)
+	require.NoError(t, err)
+	blockID := types.BlockID{Hash: block.Hash(), PartSetHeader: bps.Header()}
+
+	_, err = exec.ApplyBlock(state, blockID, block)
+	require.NoError(t, err)
+
+	// ApplyBlock only enqueues block-event publication in asynchronous mode.
+	// A later synchronous publisher, such as consensus entering the next
+	// height, can therefore reach EventBus before the queued block events.
+	require.NoError(t, eventBus.PublishEventNewRoundStep(types.EventDataRoundState{}))
+	select {
+	case first := <-sub.Out():
+		require.IsType(t, types.EventDataRoundState{}, first.Data())
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the synchronous consensus event")
+	}
+
+	select {
+	case task := <-queuedTasks:
+		task()
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the queued block-event task")
+	}
+	select {
+	case second := <-sub.Out():
+		require.IsType(t, types.EventDataNewBlock{}, second.Data())
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the asynchronous block event")
 	}
 }
 
