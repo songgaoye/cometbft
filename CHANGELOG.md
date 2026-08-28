@@ -6,6 +6,8 @@
 
 ### BUG FIXES
 
+- `[spec]` fix the inductive invariant `spec/light-client/accountability`
+
 ### IMPROVEMENTS
 
 - `[state]` use fast validator loading for `BlockExecutor` commit-info paths,
