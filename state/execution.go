@@ -576,6 +576,7 @@ func buildLastCommitInfoFromStore(block *types.Block, store Store, initialHeight
 	return BuildLastCommitInfo(block, lastValSet, initialHeight)
 }
 
+// note: set.Validators[i].ProposerPriority and set.Proposer are stale to avoid extra computations
 func (blockExec *BlockExecutor) loadValidatorsForCommitInfoCached(height int64) (*types.ValidatorSet, error) {
 	if entry := blockExec.lastLoadedCommitInfoValidators.Load(); entry != nil && entry.height == height {
 		return entry.valSet, nil
